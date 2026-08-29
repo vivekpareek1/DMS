@@ -1,0 +1,52 @@
+
+# FREE Tier Render Blueprint - 100% free, no card
+services:
+  - type: web
+    name: vault-dms-backend
+    env: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: free
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: vault-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: vault-redis
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: GOOGLE_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: DRIVE_ROOT_FOLDER_ID
+        sync: false
+      - key: LOG_RETENTION_DAYS
+        value: 180
+    healthCheckPath: /api/health
+
+  - type: web
+    name: vault-dms-frontend
+    env: docker
+    dockerfilePath: ./frontend/Dockerfile
+    dockerContext: ./frontend
+    plan: free
+    envVars:
+      - key: NEXT_PUBLIC_API_URL
+        fromService:
+          name: vault-dms-backend
+          type: web
+          property: host
+          scheme: https
+
+databases:
+  - name: vault-postgres
+    plan: free
+    databaseName: vaultdms
+    user: vault
+
+  - name: vault-redis
+    plan: free
+    type: redis

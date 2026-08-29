@@ -1,0 +1,1 @@
+describe('retention',()=>{ it('cutoff 180',()=>{ const s=new (require('./log-retention.service').LogRetentionService)(); const c=s.getCutoffDate(180); expect(c).toBeInstanceOf(Date); }); });

@@ -1,0 +1,54 @@
+
+# FREE TIER - Low RAM (2GB) version - Disables heavy services for free testing
+version: '3.8'
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: vaultdms
+      POSTGRES_USER: vault
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-freepassword123}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vault -d vaultdms"]
+      interval: 10s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --maxmemory 100mb --maxmemory-policy allkeys-lru
+    ports: ["6379:6379"]
+
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgresql://vault:${DB_PASSWORD:-freepassword123}@postgres:5432/vaultdms
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:-free-testing-jwt-secret-32-chars-min}
+      ALLOWED_ORIGINS: "*"
+      GOOGLE_SERVICE_ACCOUNT_JSON: ${GOOGLE_SERVICE_ACCOUNT_JSON}
+      DRIVE_ROOT_FOLDER_ID: ${DRIVE_ROOT_FOLDER_ID}
+      LOG_RETENTION_DAYS: 180
+      CLAMAV_ENABLED: "false" # Disable for free tier to save RAM
+      FORGE_ENABLED: "false" # Disable Forge for free tier
+    ports: ["3001:3001"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    mem_limit: 1g
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    environment:
+      NEXT_PUBLIC_API_URL: ${API_URL:-http://localhost:3001}
+    ports: ["3000:3000"]
+    mem_limit: 512m
+
+volumes:
+  pgdata:

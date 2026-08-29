@@ -1,0 +1,127 @@
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+generator client { provider = "prisma-client-js" }
+
+model User {
+  id String @id @default(cuid())
+  email String @unique
+  name String
+  avatarUrl String?
+  roles UserRole[]
+  permissions Permission[]
+  createdAt DateTime @default(now())
+}
+
+model Role {
+  id String @id @default(cuid())
+  name String @unique
+  description String?
+  permissions Permission[]
+  users UserRole[]
+}
+
+model UserRole {
+  userId String
+  roleId String
+  user User @relation(fields: [userId], references: [id])
+  role Role @relation(fields: [roleId], references: [id])
+  @@id([userId, roleId])
+}
+
+model Folder {
+  id String @id @default(cuid())
+  name String
+  driveFolderId String @unique
+  parentId String?
+  parent Folder? @relation("FolderTree", fields: [parentId], references: [id])
+  children Folder[] @relation("FolderTree")
+  path String
+  breakInheritance Boolean @default(false)
+  files File[]
+  permissions Permission[]
+  createdAt DateTime @default(now())
+  @@index([path])
+  @@index([parentId])
+}
+
+model File {
+  id String @id @default(cuid())
+  name String
+  driveFileId String @unique
+  mimeType String
+  size BigInt
+  md5 String?
+  folderId String
+  folder Folder @relation(fields: [folderId], references: [id])
+  currentVersion Int @default(1)
+  isLocked Boolean @default(false)
+  lockedById String?
+  lockedAt DateTime?
+  versions FileVersion[]
+  permissions Permission[]
+  ocrText String? @db.Text
+  thumbnailUrl String?
+  createdAt DateTime @default(now())
+  @@index([folderId])
+}
+
+model FileVersion {
+  id String @id @default(cuid())
+  fileId String
+  file File @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  version Int
+  driveFileId String
+  revisionId String?
+  size BigInt
+  createdById String
+  comment String?
+  createdAt DateTime @default(now())
+  @@unique([fileId, version])
+}
+
+model Permission {
+  id String @id @default(cuid())
+  folderId String?
+  fileId String?
+  userId String?
+  roleId String?
+  user User? @relation(fields: [userId], references: [id])
+  role Role? @relation(fields: [roleId], references: [id])
+  canView Boolean @default(false)
+  canDownload Boolean @default(false)
+  canEdit Boolean @default(false)
+  canDelete Boolean @default(false)
+  canShare Boolean @default(false)
+  canManagePerms Boolean @default(false)
+  createdAt DateTime @default(now())
+  @@index([folderId])
+  @@index([fileId])
+  @@index([userId])
+  @@index([roleId])
+}
+
+model AuditLog {
+  hash String? @unique
+  prevHash String?
+
+  id String @id @default(cuid())
+  userId String
+  userEmail String
+  action String
+  fileId String?
+  folderId String?
+  details Json?
+  ip String?
+  createdAt DateTime @default(now())
+  @@index([fileId, createdAt])
+  @@index([userId, createdAt])
+}
+
+model DriveSyncState {
+  id String @id @default(cuid())
+  pageToken String
+  lastSyncAt DateTime @default(now())
+}
