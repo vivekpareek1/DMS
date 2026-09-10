@@ -28,13 +28,29 @@ Building the 🔴 items yourself is the single most common way an internal DMS p
 | Auth | OAuth2/OIDC via Keycloak (self-hosted) or Auth0/Azure AD (managed) | Do not roll your own auth. RBAC, MFA, and SSO are solved problems — buy this layer even if everything else is built in-house |
 | Primary DB | PostgreSQL (managed: RDS/Cloud SQL, or self-hosted with replication) | ACID guarantees for permissions/audit data; row-level security supports multi-tenant-style department isolation |
 | Search index | OpenSearch / Elasticsearch | Full-text + metadata search at document-repository scale; Postgres full-text search is not sufficient past ~100k documents with OCR text attached |
-| Object storage | AWS S3 (or Azure Blob) with Object Lock / immutability policies | Native versioning, lifecycle policies, and WORM (write-once-read-many) support required for legal hold — do not use local disk or NFS for primary storage |
+| Object storage | AWS S3 (or Azure Blob) with Object Lock / immutability policies, **or** Google Drive (Shared Drives) via the Drive API — see Section 1.3 for the tradeoff | Native versioning, lifecycle policies, and WORM (write-once-read-many) support required for legal hold — do not use local disk or NFS for primary storage |
 | Cache/queue | Redis + BullMQ (or SQS) | Session cache, permission-cache invalidation, async job processing (thumbnailing, OCR, virus scan, DLP scan) |
 | OCR | Tesseract (self-hosted) or AWS Textract / Azure Form Recognizer (managed) | Self-hosted Tesseract is 🟢 for typed documents; managed OCR strongly preferred for handwriting/forms |
 | Malware scan | ClamAV (self-hosted) or cloud AV API | 🟢 build — ClamAV as a scanning microservice is a well-trodden pattern |
 | DLP content inspection | Custom regex/pattern engine (🟡) + optional Microsoft Purview/Google DLP API (🔴 for ML-based detection) | See Section 4 |
 
-### 1.2 Deployment Model
+### 1.2 Storage Backend: S3/Blob vs. Google Drive 🟡
+
+The reference repo this spec accompanies is already built Google-Drive-native (per its `README.md`), so this is documented as a supported primary storage backend, not a hypothetical. Treat it as 🟡 — buildable and viable, with real ceilings that S3/Blob don't have. Don't default to it purely because it's already there; choose deliberately.
+
+| Dimension | AWS S3 / Azure Blob | Google Drive (Shared Drives + Drive API) |
+|---|---|---|
+| Immutability / WORM for legal hold | Native (Object Lock, governance/compliance mode) — a hold is enforced by the storage provider itself, independent of your application | **No native equivalent.** A "hold" is only ever an application-enforced permission lockdown via your own Drive-service layer (revoke edit/delete scopes, monitor for out-of-band changes). This is provably weaker: anyone with direct Drive access at the domain-admin level can still alter or delete the file, and your audit chain (Section 6) becomes the *only* evidence a hold was respected — it is not itself a control. |
+| Versioning | Native, unlimited retention configurable | Native, but Drive prunes older revisions after 30 days / 100 revisions per file unless "keep forever" is set per revision — this must be set programmatically on every upload, not left as a per-file manual toggle, or version history silently degrades under retention requirements (Section 2.6/3.1). |
+| Cost model | Pay-per-GB + request pricing, scales predictably | Google Workspace per-seat storage pooling (typically bundled into Business/Enterprise licensing) — often cheaper at this company's scale *if* you're already paying for Workspace, since incremental storage cost is near-zero up to the pooled quota. |
+| API rate limits | Effectively unbounded for this scale | Drive API has per-user and per-project query quotas (default ~12,000 queries/min/project, lower per-user ceilings). Bulk operations (mass reclassification, org-wide search reindex, legal-hold sweep across thousands of files) must be rate-limited/queued — a naive bulk job will get throttled or banned. Design async, backoff-aware batch jobs from day one, not as a later fix. |
+| Data residency | Explicit region pinning per bucket | Coarser: Google Workspace offers "data regions" (US/EU) at the domain level, not per-file/per-bucket granularity. Fine for most mid-market needs; insufficient if a specific contract requires per-document jurisdiction control. |
+| Malware scan / DLP hook point | You control the upload path end-to-end, so ClamAV/DLP gate runs before the object is ever persisted | Same is achievable — route all uploads through your backend (never client-direct-to-Drive), scan/DLP-check, *then* write to Drive via a service account. If any upload path bypasses your backend (e.g., a native Drive share added outside the app), it bypasses DLP and audit entirely — this is the main operational risk of a Drive-backed design and must be closed by Workspace-level admin policy (disable direct external sharing on the Shared Drive) in addition to app-level controls. |
+| Encryption at rest | Customer-managed KMS keys, envelope-encrypted per object (Section 5) | Google encrypts at rest by default, but **customer-managed key control is limited** compared to S3+KMS — Workspace CSE (Client-Side Encryption) can close this gap but adds real integration complexity and is its own build/buy decision, not assumed by default here. |
+
+**Recommendation:** Google Drive as primary storage is a legitimate choice for this company size specifically *because* Workspace licensing is often already sunk cost — but every claim elsewhere in this document that assumes S3-style storage-layer immutability (Section 2.6 legal hold, Section 5 encryption/key management) must be read with the weaker Drive-backed variant substituted, not silently assumed to still hold. The two are not interchangeable at the "just swap the storage driver" level — legal hold in particular changes from a *storage guarantee* to an *application promise*, which is a materially different risk posture to put in front of a compliance-minded evaluator.
+
+### 1.3 Deployment Model
 
 **Recommendation: Hybrid-leaning-cloud, single-region with cross-region backup.**
 
@@ -95,7 +111,7 @@ Rationale for a 50–500-person org specifically: this size company almost never
 
 See Section 6 (dedicated deep-dive — this is one of the two or three areas an evaluator will actually stress-test).
 
-### 2.6 Retention Policies & Legal Hold 🟢
+### 2.6 Retention Policies & Legal Hold 🟢 (S3/Blob) / 🟡 (Google Drive — see caveat below)
 
 - **Purpose:** enforce that documents are kept exactly as long as required — no longer (privacy/storage cost) and no shorter (regulatory/legal risk) — with an override for active litigation.
 - **Key functions:**
@@ -103,6 +119,7 @@ See Section 6 (dedicated deep-dive — this is one of the two or three areas an 
   - Automated deletion at retention expiry, itself audit-logged.
   - Legal hold flag: suspends automated deletion for a document, folder, or user's entire corpus, overriding all retention schedules, settable only by Compliance Officer/Legal role, and itself logged with justification text.
 - **Security consideration:** legal hold must be enforced at the storage layer (S3 Object Lock / immutability), not only at the application layer — an application-layer-only hold can be bypassed by anyone with direct storage access (a real gap in several commercial DMS implementations).
+  - **If Google Drive is the storage backend (Section 1.2):** this guarantee does not hold as written. Drive has no Object Lock equivalent, so a hold is only a permission lockdown your own service enforces, plus revision "keep forever" pinning to stop version pruning. State this explicitly to Legal/Compliance before relying on it for active litigation — it is evidence-of-intent, not a storage-enforced guarantee, and a Workspace domain admin can still bypass it outside the app. Mitigate by restricting domain-admin Drive access itself and alerting on any out-of-band change to a held file's ACL or content hash (detected via periodic Drive API `revisions.list`/checksum comparison against the audit log, not assumed).
 - **Visibility:** Compliance Officer/Legal sets and releases holds; SuperAdmin cannot override an active legal hold without a change ticket and second approval.
 
 ---
@@ -161,9 +178,9 @@ See Section 6 (dedicated deep-dive — this is one of the two or three areas an 
 
 ## 5. Security & Compliance
 
-- **Encryption:** AES-256 at rest via cloud KMS (AWS KMS/Azure Key Vault) with envelope encryption per document, not a single shared key; TLS 1.2 minimum (1.3 preferred) in transit; key rotation policy (annual minimum, or per compliance framework requirement) with rotation itself audit-logged.
+- **Encryption:** AES-256 at rest via cloud KMS (AWS KMS/Azure Key Vault) with envelope encryption per document, not a single shared key; TLS 1.2 minimum (1.3 preferred) in transit; key rotation policy (annual minimum, or per compliance framework requirement) with rotation itself audit-logged. **If Google Drive is the storage backend:** customer-managed key control is limited to what Google Workspace exposes (default server-side encryption; customer-held keys require Workspace Client-Side Encryption, a separate integration — do not assume KMS-equivalent key ownership is available by default).
 - **Key management:** cloud KMS for 🟢 default; dedicated HSM only if a specific compliance framework (e.g., certain HIPAA/finance contracts) mandates hardware-backed keys — HSM operational overhead is not justified by default at this company size.
-- **Data residency:** if required, pin storage buckets/regions per data-residency requirement (e.g., EU customer data in an EU region) — this is a storage/infrastructure configuration decision, not an application feature; flag it as a deployment-config item, not a code feature.
+- **Data residency:** if required, pin storage buckets/regions per data-residency requirement (e.g., EU customer data in an EU region) — this is a storage/infrastructure configuration decision, not an application feature; flag it as a deployment-config item, not a code feature. Google Drive's residency control is coarser (Workspace-level US/EU data region, not per-bucket/per-file) — confirm this is sufficient before committing to Drive as backend for any customer with a per-document residency clause.
 - **Compliance readiness:**
   - **GDPR:** data subject access/export, right-to-erasure (reconciled against legal hold — erasure requests on a legal-hold document must be blocked and escalated, not silently honored), pseudonymization in audit logs where feasible (matches the existing repo's stated approach in `SECURITY_FIXES_APPLIED.md`).
   - **SOC 2:** access logging, change management evidence, vendor risk documentation for every 🔴 integration — SOC 2 auditors will ask about sub-processors.
@@ -208,6 +225,7 @@ See Section 6 (dedicated deep-dive — this is one of the two or three areas an 
 ## 9. Recommended Implementation Roadmap
 
 **Phase 1 — Core security + document handling (foundation; nothing else is trustworthy without this)**
+- Storage backend decision made explicitly (S3/Blob vs. Google Drive, Section 1.2) — this is a Phase 1 gate, not a later swap: legal hold, key management, and residency posture all follow from it (Sections 2.6, 5), and switching backends after documents/permissions accumulate is a migration project, not a config change.
 - Auth/SSO/MFA (via IdP, not custom-built), RBAC, group/department permissions
 - Upload/download/versioning/check-in-check-out
 - Encryption at rest/in transit, KMS integration
