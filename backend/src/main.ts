@@ -6,6 +6,14 @@ import * as helmet from 'helmet';
 
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
+
+  // Fail fast: JwtAuthGuard signs/verifies with this secret - an unset or weak
+  // secret makes every issued/verified token insecure or unverifiable.
+  if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
+    logger.error('CRITICAL: JWT_SECRET missing or shorter than 32 chars - refusing to start');
+    process.exit(1);
+  }
+
   const app = await NestFactory.create(AppModule);
 
   // P0 FIX: Secure headers

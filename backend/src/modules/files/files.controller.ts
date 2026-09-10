@@ -1,22 +1,26 @@
 
-import { Controller, Post, Get, Param, UseGuards, Req, UploadedFile, UseInterceptors, Body, BadRequestException, NotFoundException, ForbiddenException, Logger } from '@nestjs/common';
+import { Controller, Post, Get, Param, UseGuards, Inject, Req, UploadedFile, UseInterceptors, Body, BadRequestException, NotFoundException, ForbiddenException, Logger } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { DriveService } from '../drive/drive.service';
 import { PermissionService } from '../permissions/permission.service';
 import { AuditService } from '../audit/audit.service';
+import { ClamAvService } from '../security/clamav.service';
+import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { diskStorage } from 'multer';
 import * as path from 'path';
 import * as fs from 'fs';
 
 @Controller('files')
+@UseGuards(JwtAuthGuard)
 export class FilesController {
   private readonly logger = new Logger(FilesController.name);
   constructor(
     private driveService: DriveService,
     private permissionService: PermissionService,
     private auditService: AuditService,
-    private prisma: any,
-    private redis: any
+    private clamavService: ClamAvService,
+    @Inject('PRISMA') private prisma: any,
+    @Inject('REDIS') private redis: any
   ) {}
 
   @Post('upload')
@@ -53,8 +57,8 @@ export class FilesController {
     if (!folder) throw new NotFoundException('Folder not found');
 
     try {
-      // 1. Virus scan (ClamAV) - P1 but added
-      // await this.clamavService.scan(file.path);
+      // 1. Virus scan (ClamAV) - blocks the request if infected, throws BadRequestException
+      await this.clamavService.scanFile(file.path);
 
       // 2. Upload to Drive - P0 fixed resumable
       const driveFile = await this.driveService.uploadResumable(folder.driveFolderId, file.path, file.originalname);

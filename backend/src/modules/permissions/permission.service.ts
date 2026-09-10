@@ -1,5 +1,5 @@
 
-import { Injectable, ForbiddenException, NotFoundException, Logger } from '@nestjs/common';
+import { Injectable, ForbiddenException, NotFoundException, Logger, Inject, InternalServerErrorException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 
 type Action = 'canView' | 'canDownload' | 'canEdit' | 'canDelete' | 'canManagePerms';
@@ -7,7 +7,7 @@ type Action = 'canView' | 'canDownload' | 'canEdit' | 'canDelete' | 'canManagePe
 @Injectable()
 export class PermissionService {
   private readonly logger = new Logger(PermissionService.name);
-  constructor(private prisma: PrismaService, private redis: any) {}
+  constructor(private prisma: PrismaService, @Inject('REDIS') private redis: any) {}
 
   /**
    * P0 FIX: Implemented cache + cycle detection + proper error types
@@ -125,9 +125,4 @@ export class PermissionService {
       this.logger.warn(`Cache invalidation failed: ${(e as Error).message}`);
     }
   }
-}
-
-// Helper to avoid import error
-class InternalServerErrorException extends Error {
-  constructor(msg: string) { super(msg); this.name = 'InternalServerErrorException'; }
 }
